@@ -6,10 +6,25 @@ findings against these paths and they will be applied upstream.
 | | |
 |---|---|
 | Source repository | `d3labs-io/rex-retail-primary` (private) |
-| Source branch | `staging` |
-| Source commit | `de43c8bcae7607ea1f0da05059e0b6f08f3e0b7b` |
-| Exported | 2026-09-30 |
+| Source branch | `docs/at218-review-audit` — **not yet merged to `staging`** (see below) |
+| Source commit | `07a277e` |
+| Exported | 2026-09-30 (refreshed; first export the same day from `staging` `de43c8bc`) |
 | Contract version | `REXPrimary.VERSION()` = `1.4.0` |
+
+**This refresh changes exactly one file, and it is a test.** `contracts/src/`, `shared/src/`,
+`contracts/script/`, `shared/mocks/` and `config/` are **byte-identical to the previous export** — so
+if you have already read the contracts, you do not need to re-read them. The delta is
+`contracts/test/PruvExecutor.invariant.t.sol`, which adds two stateful invariants over the executor's
+**deposit** leg (`invariant_executorAssetSolvency`, asserting the executor holds every USDC it has
+committed to a recorded-but-unresolved subscribe leg, and `invariant_depositResolvedAtMostOnce`) plus
+three handler actions that drive that leg. It closes a coverage gap our own review raised: the
+committed-funds counter introduced by the **H-1** remediation (`pendingDepositAssets`) was the one
+with no fuzz behind it, while its redeem twin had 256 runs.
+
+The source branch is named above rather than `staging` because merging to `staging` triggers a
+deployment, so the branch is held for review. Nothing in this refresh touches a contract; the
+upstream commit also carries operator-tooling and documentation fixes that are outside this export's
+scope (`ops/`, `docs/`).
 
 ## What was copied
 
