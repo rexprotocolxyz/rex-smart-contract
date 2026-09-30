@@ -1,0 +1,46 @@
+[profile.default]
+src = "contracts"
+test = "test"
+script = "script"
+out = "out"
+libs = ["node_modules"]
+cache_path = "cache"
+fs_permissions = [
+    { access = "read", path = "./script/config" },
+    { access = "read-write", path = "./deployments" },
+    { access = "read-write", path = "./simulations" },
+]
+
+solc = "0.8.36"
+auto_detect_solc = false
+evm_version = "cancun"
+
+optimizer = true
+optimizer_runs = 200
+via_ir = false
+
+[profile.default.fuzz]
+runs = 256
+
+[profile.default.invariant]
+runs = 256
+depth = 64
+fail_on_revert = true
+
+[lint]
+exclude_lints = ["block-timestamp"]
+
+[profile.ci.fuzz]
+runs = 10_000
+
+[profile.ci.invariant]
+runs = 512
+depth = 128
+fail_on_revert = true
+
+[profile.production]
+build_info = true
+eth_rpc_url = "default"
+
+[rpc_endpoints]
+default = "${RPC_URL}"

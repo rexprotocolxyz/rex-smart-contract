@@ -1,0 +1,4 @@
+{
+  "exclude_dependencies": true,
+  "filter_paths": "node_modules|test"
+}

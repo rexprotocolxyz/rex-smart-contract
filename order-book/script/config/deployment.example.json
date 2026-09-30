@@ -1,0 +1,17 @@
+{
+  "configurationVersion": 1,
+  "chainId": 0,
+  "minimumDeploymentBlock": 0,
+  "factoryOwner": "0x0000000000000000000000000000000000000001",
+  "defaultOrderBookOwner": "0x0000000000000000000000000000000000000002",
+  "feeControllerProposer": "0x0000000000000000000000000000000000000003",
+  "feeRecipient": "0x0000000000000000000000000000000000000004",
+  "initialMakerFeeBps": 10,
+  "initialTakerFeeBps": 10,
+  "controllerMaximumMakerFeeBps": 100,
+  "controllerMaximumTakerFeeBps": 100,
+  "orderBookMaximumMakerFeeBps": 100,
+  "orderBookMaximumTakerFeeBps": 100,
+  "initialTakerFeeToken": 1,
+  "feeControllerDelay": 172800
+}

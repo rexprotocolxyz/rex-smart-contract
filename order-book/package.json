@@ -1,0 +1,40 @@
+{
+  "name": "@d3labs/rex-expedited-exit-smart-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "license": "MIT",
+  "description": "Smart contracts for the REX expedited-exit order book",
+  "scripts": {
+    "build": "forge build",
+    "build:sizes": "bash script/checks/check-contract-sizes.sh",
+    "clean": "forge clean",
+    "coverage": "forge coverage",
+    "test": "forge test",
+    "test:ci": "FOUNDRY_PROFILE=ci forge test",
+    "test:coverage-to-size": "pnpm coverage && pnpm build:sizes",
+    "test:sizes": "bash script/tests/contract-sizes.test.sh",
+    "test:gas": "forge test --gas-report",
+    "format": "forge fmt",
+    "format:check": "forge fmt --check",
+    "lint": "pnpm lint:solhint && pnpm lint:forge",
+    "deploy:simulate": "FOUNDRY_PROFILE=production forge script script/deploy/DeployOrderBookSystem.s.sol:DeployOrderBookSystem -vvv",
+    "deploy:broadcast": "pnpm deploy:simulate --broadcast --slow",
+    "deploy:broadcast-and-verify:etherscan": "pnpm deploy:broadcast --verify --verifier etherscan",
+    "deploy:broadcast-and-verify:blockscout": "pnpm deploy:broadcast --verify --verifier blockscout",
+    "deploy:resume": "pnpm deploy:broadcast --resume",
+    "deploy:verify": "FOUNDRY_PROFILE=production forge script script/deploy/DeployOrderBookSystem.s.sol:DeployOrderBookSystem -vvv --broadcast --verify --resume",
+    "deploy:verify:etherscan": "pnpm deploy:verify --verifier etherscan",
+    "deploy:verify:blockscout": "pnpm deploy:verify --verifier blockscout",
+    "lint:forge": "forge lint contracts script --deny warnings",
+    "lint:solhint": "solhint --disc --max-warnings 0 'contracts/**/*.sol' 'script/**/*.sol'",
+    "analyze:slither": "slither . --foundry-compile-all",
+    "snapshot": "forge snapshot"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "5.6.1"
+  },
+  "devDependencies": {
+    "solhint": "6.2.3"
+  }
+}

@@ -1,0 +1,38 @@
+# Dependencies
+/node_modules/
+
+# Foundry
+/cache/
+/out/
+/broadcast/
+/deployments/
+/simulations/
+
+# Hardhat and generated contract bindings
+/artifacts/
+/artifacts_hardhat/
+/cache_hardhat/
+/typechain-types/
+/ignition/deployments/chain-31337/
+
+# Coverage and static analysis
+/coverage/
+/crytic-export/
+lcov.info
+
+# Local Python tooling
+/.venv/
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Credential material
+*.pem
+*.key
+*.keystore
+/keystore/
+/keystores/
+/secrets/
