@@ -1,0 +1,71 @@
+[profile.default]
+src = "src"
+test = "test"
+libs = ["lib"]
+# SC8b: this config (solc 0.8.30 + runs=1 + stripped metadata) shrinks REXPrimary
+# 28,032 -> 25,454 B; the getter demotion + internal-function factorings in REXPrimary.sol
+# then close the rest to 24,575 B, under the EIP-170 24,576 B limit. runs=1 favors deployment
+# size over runtime gas -- acceptable: testnet-first, PRUV gas=0 (spec 2026-08-18). evm_version
+# pinned to cancun: Foundry already resolved 0.8.24 to cancun, so this is no target change --
+# it only stops 0.8.30 from defaulting to prague. (PRUV cancun-opcode support is a PruvExecutor
+# deploy-time checklist item, pre-existing since SC1 -- see the spec's Open Items.)
+solc = "0.8.30"
+optimizer = true
+optimizer_runs = 1
+# SC3Params (REXPrimary constructor) pushes constructor arg decoding past the legacy
+# codegen's stack limit ("stack too deep") even after grouping fields into a struct;
+# via-ir is the compiler's own suggested fix and changes no signatures/semantics.
+via_ir = true
+evm_version = "cancun"
+bytecode_hash = "none"
+cbor_metadata = false
+remappings = ["@rex-shared/=../shared/src/", "@rex-shared-mocks/=../shared/mocks/"]
+# Deploy config (config/networks.json, config/deploy/*.params.json) lives at the repo root,
+# one level above this Foundry root -- the deploy scripts read it via a relative
+# "../config/..." path, which needs its own fs_permissions entry (the "./" entry below only
+# covers this directory).
+fs_permissions = [{ access = "read", path = "./" }, { access = "read", path = "../config" }]
+
+# PRUV testnet EVM is pre-Cancun -- PruvExecutor must be built without PUSH0/MCOPY or it reverts
+# on deploy (consume-all-gas invalid opcode). Build it with: FOUNDRY_PROFILE=pruv forge build.
+# The DEFAULT profile stays cancun so REXPrimary keeps its EIP-170 headroom on Sepolia.
+# Foundry profiles do not inherit from [profile.default] -- every size/codegen-relevant key
+# above is replicated here verbatim, only evm_version differs.
+[profile.pruv]
+src = "src"
+test = "test"
+libs = ["lib"]
+solc = "0.8.30"
+optimizer = true
+optimizer_runs = 1
+via_ir = true
+evm_version = "paris"
+bytecode_hash = "none"
+cbor_metadata = false
+remappings = ["@rex-shared/=../shared/src/", "@rex-shared-mocks/=../shared/mocks/"]
+fs_permissions = [{ access = "read", path = "./" }, { access = "read", path = "../config" }]
+
+# The CI gate (`forge build --deny warnings`) enforces zero COMPILER warnings
+# (constitution Art 12). forge-lint is a separate style tool: keep it off the build
+# so a style note never fails the compiler gate, and exclude `unaliased-plain-import`
+# (plain `import "x.sol"` is idiomatic here and across forge-std/OZ) for manual `forge lint`.
+[lint]
+lint_on_build = false
+exclude_lints = ["unaliased-plain-import"]
+
+[rpc_endpoints]
+sepolia = "${SEPOLIA_RPC_URL}"
+pruv = "https://rpc.testnet.pruv.network"
+# BSC testnet becomes the home chain from 1.4.0 (Lead, 2026-09-18). Spelled out like PRUV's rather
+# than an env var so a deploy needs no extra setup; swap for a private endpoint if rate limits bite.
+# BSC testnet is Cancun (parentBeaconBlockRoot present), so the DEFAULT profile builds for it --
+# only PruvExecutor still needs FOUNDRY_PROFILE=pruv for PRUV's pre-Cancun EVM.
+bsc = "https://bsc-testnet.publicnode.com"
+
+[etherscan]
+sepolia = { key = "${ETHERSCAN_API_KEY}", chain = 11155111 }
+# Etherscan V2 serves BSC testnet under the same multichain key, so --verify needs no second key.
+bsc = { key = "${ETHERSCAN_API_KEY}", chain = 97 }
+# PRUV verification support is a build-time unknown (no explorer/verifier API confirmed yet,
+# see the plan's "Build-time verifications" section) -- leave PRUV off --verify until one is
+# confirmed; PRUV deploys skip the --verify flag entirely.

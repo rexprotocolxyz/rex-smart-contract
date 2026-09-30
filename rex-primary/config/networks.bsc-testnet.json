@@ -1,0 +1,77 @@
+{
+  "$comment": [
+    "BSC TESTNET home chain. rpcUrl is a public endpoint, spelled out the way PRUV's is, so a deploy",
+    "needs no extra environment variable; swap it for a private one if rate limits bite.",
+    "",
+    "A SECOND networks file, not an edit of networks.json: 1.3.1 is live on Sepolia and staging",
+    "resolves against it, so the operational config must keep working untouched. Lead ruling",
+    "2026-09-18: BSC testnet is the home chain for staging, BSC mainnet for production; Sepolia",
+    "stays only as the 1.3.1 deployment.",
+    "",
+    "**THE USDC LEG IS 18-DECIMAL (Derryl's 2026-09-18 replacement set, built to match mainnet).**",
+    "This is the first deployment in which ADR-028's cross-decimal path is exercised at all. Measured",
+    "on chain 2026-09-18:",
+    "  BSC     usdcWarpRoute 0x1517A8..10Ff  collateral, wraps 0x867FBB..af84 (FakeUSDC, 18 dp), scale() = 1",
+    "  PRUV    usdcWarpRoute 0x72404d68..D51E collateral, wraps 0x756EfF..4cBE (FakeUSDC,  6 dp), scale() = 1e12",
+    "  Sepolia (same pair)   0x9495AC..FF2d   collateral, wraps 0x756EfF..4cBE,               scale() = 1e12",
+    "`scale * 10^decimals` is 1e18 on every leg, which is the invariant postDeploy asserts -- and on",
+    "this pair that assertion is a REAL check for the first time instead of a tautology at 6/6.",
+    "**ADR-028 OQ-3 is answered** by driving the deployed Sepolia route's own `handle`: a wire amount",
+    "of 1e18 pays out exactly 1e6 locally, so inbound DIVIDES by scale, exactly as D7 assumed",
+    "(contracts/test/fork/ScaleConvention.t.sol).",
+    "",
+    "The wRWA leg is unchanged and still 6-decimal on all three chains: BSC's route IS the ERC-20",
+    "(synthetic), PRUV's is collateral over the vault 0x5d5C78..7370.",
+    "",
+    "The FUND block's usdcWarpRoute is the NEW PRUV route, because that is the one BSC is enrolled",
+    "with -- config/networks.json still points at the operational 0x725e38fc..c16A for 1.3.1.",
+    "",
+    "rexRegistry and rexLens are null on purpose: both are per-home-chain REX deployments and neither",
+    "exists on BSC yet. They are filled in by the deploy, exactly as Sepolia's were.",
+    "",
+    "rexRegistryV2 (ADR-032): the flat v2 directory, deployed 2026-09-28 and holding the four live",
+    "funds. rexRegistry (v1) stays",
+    "recorded while a v1 instance is live and BE6 has not cut over; the two are independent",
+    "contracts, not versions of one address."
+  ],
+  "defaultFund": "evergreen",
+  "home": {
+    "key": "bsc-testnet",
+    "role": "home",
+    "chainId": 97,
+    "hyperlaneDomain": 97,
+    "explorerUrl": "https://testnet.bscscan.com",
+    "rpcUrl": "https://bsc-testnet.publicnode.com",
+    "multicall3": "0xcA11bde05977b3631167028862bE2a173976CA11",
+    "contracts": {
+      "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+      "usdcWarpRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+      "wrwaWarpRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+      "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4"
+    }
+  },
+  "fund": {
+    "key": "pruv-testnet",
+    "role": "fund",
+    "chainId": 7336,
+    "hyperlaneDomain": 7336,
+    "explorerUrl": "https://explorer.testnet.pruv.network",
+    "rpcUrl": "https://rpc.testnet.pruv.network",
+    "contracts": {
+      "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+      "usdcWarpRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+      "wrwaWarpRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+      "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+      "rwaToken": "0x5d5c787e29a807194f8bc82ee2cfbddce2407370",
+      "rwaConversion": "0x261113d0c29e83d37ee3081e933f18743665e546"
+    },
+    "tx": {
+      "legacy": true,
+      "gasPrice": "0",
+      "gasLimit": "8000000"
+    }
+  },
+  "rexRegistry": "0x1cF57e21EB8642d6520AEB3d777Bd94A7a70444F",
+  "rexLens": "0xa8C77d53b5F660a74Ff6106a9d3E1d0f55F50547",
+  "rexRegistryV2": "0x74c0A08dB8e2C45F8E8997b91Efbcfdd7eDB1DD1"
+}

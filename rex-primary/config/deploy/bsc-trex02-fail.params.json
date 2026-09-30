@@ -1,0 +1,203 @@
+{
+  "$why": [
+    "TREX02 launchpad test -- the instance that must FAIL (AT-273).",
+    "Deposit strictly LESS than 40 FakeUSDC (20 is the intended figure) and closeLaunchpad takes it",
+    "to LaunchpadFail: no bridge, no executor involvement at all, and refundLaunchpad returns 100%",
+    "with no fee (REXPrimary.sol:448-450, :483-489).",
+    "",
+    "Deposit something rather than nothing -- a failed launchpad with no position in it shows an",
+    "empty card and proves neither the fail state nor the refund path.",
+    "",
+    "LaunchpadFail is TERMINAL. This instance cannot be reused for anything afterwards."
+  ],
+  "$comment": [
+    "Cloned from bsc-testnet-b.params.json. Everything not listed in $why is IDENTICAL to it,",
+    "including the 18-decimal home USDC note that governs every amount below: minSub and",
+    "launchpadMinimum are 40e18, NOT 40e6. minRedeem does not move -- it is wRWA (ADR-026 D2) and",
+    "TREX02 is 6 dp, exactly as TREX01 was.",
+    "",
+    "`key` is deliberately NOT 'evergreen'. DeployConfig.requireFundMatchesNetworks only compares a",
+    "fund file against networks.json when the file's key EQUALS that file's defaultFund, so a",
+    "distinct key skips a drift check that would otherwise revert the deploy: this fund's four",
+    "addresses are TREX02's and networks.bsc-testnet.json still carries TREX01's copy for the",
+    "evergreen fund. Do not rename it to 'evergreen' to 'tidy up'.",
+    "",
+    "navOracleConsumer.reuseAddress and roles.reporter are KEPT at TREX01's pair. The reporter is",
+    "immutably bound to that consumer, so a fresh consumer would force a fresh reporter and a new",
+    "Pruv whitelist. The cost is that this fund DISPLAYS TREX01's NAV. That is safe for a launchpad",
+    "test and only for one: closeLaunchpad reads no NAV at all (REXPrimary.sol:467) and ADR-026 took",
+    "NAV off the home money path, so it is a display feed here. Do not read this fund's NAV as TREX02's."
+  ],
+  "key": "trex02-fail",
+  "contracts": {
+    "$comment": [
+      "TREX02, the SECOND fund token on PRUV. Every address read on chain 2026-09-28 rather than",
+      "copied from chat:",
+      "  rwaToken       RWAToken proxy, symbol TREX02, 6 dp.",
+      "  rwaConversion  read from the vault itself -- RWAToken.rwaConversion() (pruv-interface.md:176).",
+      "                 The same call on TREX01's vault returns 0x261113d0..., the value already",
+      "                 recorded for that fund, which is what makes this one trustworthy. value() = 1e18.",
+      "  fundWrwaRoute  PRUV collateral leg, wrappedToken() = the TREX02 vault.",
+      "  homeWrwaRoute  BSC synthetic leg, symbol TREX02, name 'Test REX 02', 6 dp.",
+      "Both legs are enrolled with each other: routers(97) and routers(7336) each answer the other.",
+      "The BSC address equalling TREX01's PRUV route address is a genuine same-deployer/same-nonce",
+      "collision across two chains, not a copy-paste -- it was read off the contract."
+    ],
+    "rwaToken": "0x6becea396ee56dbe842c7b1806da905a5e78c9a8",
+    "rwaConversion": "0x86cf826955a296281c9bb0839d83a5fd061592af",
+    "fundWrwaRoute": "0x976B1be260b2D7481124bB41aE27e4F1025A7570",
+    "homeWrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E"
+  },
+  "rexPrimary": {
+    "$comment": [
+      "launchpadStart is SECONDS FROM DEPLOY, not an absolute time, and closeLaunchpad is only",
+      "permitted once launchpadStart + launchpadPeriod has fully elapsed (REXPrimary.sol:439).",
+      "120 + 7200 means: window opens ~2 min after the deploy transaction and closes 2h2m after it.",
+      "Recompute launchpadStart at deploy time if the target close hour matters."
+    ],
+    "minSub": "40000000000000000000",
+    "launchpadStart": 120,
+    "launchpadPeriod": 7200,
+    "launchpadMinimum": "40000000000000000000",
+    "cancelFeeBps": 50,
+    "feeRecipient": "${DEPLOYER_ADDRESS}",
+    "sc3Params": {
+      "$comment": [
+        "Verbatim SC3Params (contracts/src/REXPrimary.sol) minus `navOracle` (deploy-resolved, see the",
+        "top-level $comment). All timeouts/windows in seconds, fees in bps of 10000.",
+        "minRedeem: **wRWA share units** (SC11 / ADR-026), Pruv's minimum redemption batch. NOT USDC --",
+        "  the gate is `rb.netIn >= minRedeem`, share-count against share-count, which is what lets",
+        "  initiateSubEpoch read no NAV at all. Reading this as USDC would set it ~1e6 wrong and",
+        "  nothing would revert: the batch would simply accrue instead of bridging. 20000000 = 20 wRWA",
+        "  (wRWA is 6dp on home, asserted at deploy), set 2026-09-09 alongside minSub.",
+        "redeemCancelFeeBps: redeem-side cancel fee. 0 = testnet-dev permissive (config-values.md",
+        "  section 6 suggests 10-25bps for a real launch, not yet Final).",
+        "redemptionFeeBps: charged on total redeem proceeds at claim (ADR-014). 0 = testnet-dev",
+        "  permissive (config-values.md section 6 suggests 50bps for a real launch, not yet Final).",
+        "redeemFulfillTimeout: seconds before an unfulfilled redeem batch may abortRedeem (ADR-009/012).",
+        "  950400 = 11 days -- home MUST EXCEED the executor copy (SC13 D12): the home copy waits on a",
+        "  full round trip, the executor only on its own leg (indicative home-side copy vs the",
+        "  executor's authoritative one, shared-v1.6).",
+        "windDownWindow: seconds redeem stays open after triggerWindDown before triggerShutDown (SC6b).",
+        "  777600 = 9 days (matches the Forge test default).",
+        "subFulfillTimeout: seconds after a subscribe batch BRIDGES before `recoverStuckBatch` may",
+        "  declare it dead and release its stranded residual (M-1). A bridge-liveness deadline, NOT an",
+        "  accrual cap -- ADR-027 retired those, and this took over `maxSubWait`'s second job.",
+        "  MUST EXCEED pruvExecutor.subFulfillTimeout and is deliberately NOT a mirror of it: the",
+        "  executor times the OUTBOUND leg only, while this one waits on a full round trip (bridge out,",
+        "  vault deposit, wRWA back).",
+        "  259200 = 3 days. Sized from OBSERVED latency, not from the old maxSubWait: a return leg lagged",
+        "  ~1 day in 2026-09, and firing early is not a delay but a LOSS -- recoverStuckBatch flips the",
+        "  batch to Settled with returnedAmount 0, which zeroes every subscriber's claim irreversibly and",
+        "  permanently blocks the genuine return. 3h (the first value tried here) sat inside the observed",
+        "  range and would have done exactly that."
+      ],
+      "minRedeem": "20000000",
+      "redeemCancelFeeBps": 50,
+      "redemptionFeeBps": 25,
+      "redeemFulfillTimeout": 950400,
+      "subFulfillTimeout": 259200,
+      "windDownWindow": 777600
+    }
+  },
+  "navReporter": {
+    "$comment": [
+      "SC9 NavReporter constructor param. heartbeatSeconds <= NavOracleConsumer.stalenessWindow so",
+      "nav() cannot go stale between real setValue moves (ADR-004 A1; config-values.md sections 63/68).",
+      "1800 = 30 min = 0.5x the live testnet 1h stalenessWindow. mainnet value = risk review.",
+      "mailbox/homeDomain/rwaConversion come from config/networks.json; consumer is passed at deploy",
+      "time (the live NavOracleConsumer address, config/deployments.json)."
+    ],
+    "heartbeatSeconds": 1800
+  },
+  "pruvExecutor": {
+    "$comment": [
+      "TODO before deploy: redeemDelay, minRedeemDelay and executorSlippageBps are placeholders",
+      "borrowed from testnet-dev. See this file's header.",
+      "Verbatim PruvExecutor constructor args minus the 6 external-contract/network params",
+      "(mailbox/wrwaRoute/usdc/usdcRoute/rwaToken from config/networks.json's fund entry, homeDomain from",
+      "home.hyperlaneDomain). Timeouts in seconds, bps of 10000.",
+      "subFulfillTimeout: deadline on a recorded-but-unexecuted subscribe leg before abortDeposit",
+      "  (ADR-015 D9). 3600 = 1 hour (matches the Forge test default).",
+      "executorSlippageBps: floor on the vault's output, as drift against the LOCAL fund-chain",
+      "  rwaConversion.value() -- no longer vs the bridged navAtInitiate (ADR-026 W3). 5000 = 50%,",
+      "  mandated by ADR-026 decision 5 and raised from 100 on 2026-09-09. It is the ONLY guard on",
+      "  vault output in either path (there is no separate zero check), so it must never be 1e4: at",
+      "  1e4 the floor computes to zero and a 0-share deposit or 0-USDC redeem would be accepted and",
+      "  latched. The constructor rejects >= 1e4. 50% keeps a catastrophe guard while never firing on",
+      "  Pruv's exit fee or on rounding -- at 100 it would have reverted executeRedeem every time if",
+      "  that fee exceeded 1%.",
+      "redeemFulfillTimeout: issuer fulfillment deadline gating abortRedeem, executor-side authoritative",
+      "  copy (shared-v1.6). 864000 = 10 days -- home MUST EXCEED the executor copy (SC13 D12), so",
+      "  rexPrimary.sc3Params.redeemFulfillTimeout above is 950400, not this value."
+    ],
+    "subFulfillTimeout": 3600,
+    "executorSlippageBps": 5000,
+    "redeemFulfillTimeout": 864000,
+    "redeemDelay": 600,
+    "minRedeemDelay": 60
+  },
+  "navOracleConsumer": {
+    "$comment": [
+      "NO reuseAddress here, on purpose. Every deploy since 1.1.0 REUSED the Sepolia consumer",
+      "0x9a42404134f1001d259fC979c2471D60BB989eB8 (removed from this file: 0x9a42404134f1001d259fC979c2471D60BB989eB8)",
+      "because the home chain never changed. BSC is a new home chain, so that address has no code there",
+      "and DeployHome.s.sol:93 would refuse it outright. A fresh NavOracleConsumer is deployed here --",
+      "and per that script's own warning, a new consumer FORCES a new NavReporter on PRUV, because",
+      "NavReporter.consumer is immutable."
+    ],
+    "reporterDomain": 7336,
+    "stalenessWindow": 3600,
+    "maxNavMoveBps": 500,
+    "seedNav": "1000000000000000000",
+    "reuseAddress": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105"
+  },
+  "roles": {
+    "$comment": [
+      "reporter: the NavReporter deployed for THIS home chain on 2026-09-18, paired with the BSC",
+      "  NavOracleConsumer 0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105. NavReporter.consumer is immutable, so this",
+      "  pair is fixed: a different consumer would need a different reporter. Set before",
+      "  `ops post-deploy` runs, or the consumer enrolls a sender that never pokes it and every",
+      "  poke() from the real reporter is rejected -- silent, no revert at deploy time.",
+      "  a sender that never pokes it, and every poke() from the real reporter would be rejected.",
+      "",
+      "Access-control addresses applied post-deploy (owner/guardian are REXPrimary; reporter is",
+      "NavOracleConsumer.enrollReporter's bytes32 sender). testnet-dev collapses these to ONE",
+      "DEPLOYER_ADDRESS in the environment before running; no default is invented here.",
+      "owner: Ownable2Step owner (REXPrimary) -- defaults to the deploying address at construction;",
+      "  restated here so later deploy steps (setGuardian/ownership transfer) have one",
+      "  source of truth.",
+      "guardian: REXPrimary.setGuardian target -- MANDATORY post-deploy step (config-values.md",
+      "  section 7): the pool launches with guardian == address(0) (pause disabled) until this call.",
+      "  PER DEPLOYMENT, not a fixed role: NavReporter's `consumer` is immutable, so a new",
+      "  NavOracleConsumer forces a new NavReporter, and this value MUST be updated to the newly",
+      "  deployed reporter BEFORE `ops post-deploy` runs -- otherwise the consumer enrolls the wrong",
+      "  sender and every poke() is rejected. (Before SC9 there was no reporter contract and this",
+      "  reused the deploy EOA as a stand-in; that is no longer the topology.)"
+    ],
+    "owner": "${DEPLOYER_ADDRESS}",
+    "guardian": "${DEPLOYER_ADDRESS}",
+    "reporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+  },
+  "schedule": {
+    "$comment": [
+      "TODO before deploy: epochDuration and windowLength are the 1h/10m test cadence, not production.",
+      "ADR-025 / RULING 8: the epoch calendar, deployed as its own EpochSchedule contract and passed",
+      "to REXPrimary via SC3Params. DeployHome derives epochStart itself as (launchpadStart +",
+      "launchpadPeriod + epochDuration) -- at LEAST one full epochDuration after the launchpad closes,",
+      "not the close instant itself: closeLaunchpad neither advances currentEpochId nor touches",
+      "lastClosedPeriod, so epochStart == launchpadClose would make periodOf(now) already 1 > 0 the",
+      "moment the launchpad closes, letting the first depositor after close immediately trigger epoch",
+      "1 -- the exact defect the schedule design exists to remove. Only epochDuration is config here;",
+      "epochStart is never read as a raw value, so an operator cannot re-introduce the instant-close",
+      "by editing config alone.",
+      "epochDuration is 30 days in PRODUCTION. This file is testnet-dev and runs 3600 = ONE HOUR",
+      "  (Lead, 2026-09-09) -- what David asked for during testing. At the production cadence the",
+      "  first epoch could not close until ~31 days after deploy, so the gate would be unobservable.",
+      "  Change this and maxSubWait/maxRedeemWait TOGETHER: DeployHome and postDeploy both assert",
+      "  the caps strictly exceed it."
+    ],
+    "epochDuration": 3600,
+    "windowLength": 600
+  }
+}

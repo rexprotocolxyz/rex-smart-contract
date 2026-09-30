@@ -1,0 +1,6 @@
+[submodule "rex-primary/contracts/lib/forge-std"]
+	path = rex-primary/contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "rex-primary/contracts/lib/openzeppelin-contracts"]
+	path = rex-primary/contracts/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts

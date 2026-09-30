@@ -1,0 +1,23 @@
+# Foundry
+/contracts/cache/
+/contracts/out/
+/contracts/broadcast/
+
+# Coverage and static analysis
+/coverage/
+/crytic-export/
+lcov.info
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Credential material
+*.pem
+*.key
+*.keystore
+/keystore/
+/keystores/
+/secrets/

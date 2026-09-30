@@ -1,0 +1,77 @@
+{
+  "$comment": [
+    "Launchpad-UI test fund. Identical to testnet-dev EXCEPT the launchpad window, which is SEVEN",
+    "DAYS instead of 1 hour so the dApp's launchpad screens can be exercised against a fund that",
+    "is actually in `Initialized` rather than one that closed minutes after deploy.",
+    "",
+    "Window raised from 2 days to 7 on the 1.3.0 redeploy (2026-09-12). The 1.2.0 demo fund was",
+    "deployed 2026-09-10 with a 2-day window and expired on the 12th -- it ran out before the FE",
+    "work that needed it did, which is the whole failure this fund exists to avoid.",
+    "",
+    "RECORDED IN config/deployments.json, BUT WITH \"opsDefault\": false. The entry is what makes BE",
+    "index the fund -- without one a holder's launchpad deposit is invisible in the dApp, which is",
+    "the whole reason this fund exists. The flag is what stops it hijacking the CLI: `readDeployment`",
+    "otherwise picks the newest `deployedAt` for a network, and this fund is deployed AFTER the",
+    "operational one. Set the flag BY HAND after `post-deploy` -- nothing writes it for you. Operate",
+    "this fund with `tx <verb> --rex-primary <its address>`.",
+    "",
+    "REGISTRY CAVEAT: the registry keys by the rwaToken address (REXRegistry._validateAndKey), not",
+    "by wrwaRoute as ADR-021 worded it. This fund shares rwaToken 0x5d5c787e with the operational",
+    "one, so registering it makes it a NEW VERSION of the SAME fund. latestOf is the tail of the",
+    "chain and BE resolves latestOfToken, so whichever is registered LAST is what the dApp shows.",
+    "Reversible: unregister clears the fund record, so removing this one leaves 1.2.0 current.",
+    "",
+    "SC13 §4.2: pruvExecutor.redeemDelay (and minRedeemDelay) must stay below epochDuration - schedule.windowLength."
+  ],
+  "key": "launchpad-demo",
+  "contracts": {
+    "rwaToken": "0x5d5c787e29a807194f8bc82ee2cfbddce2407370",
+    "rwaConversion": "0x261113d0c29e83d37ee3081e933f18743665e546",
+    "fundWrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+    "homeWrwaRoute": "0x598fA0aE2f1cCB38642531ecf3C4ed35f7937dfb"
+  },
+  "rexPrimary": {
+    "$comment": "launchpadPeriod 604800 = 7 days. launchpadMinimum must stay >= minSub or the ctor reverts InvalidLaunchpadConfig.",
+    "minSub": "20000000",
+    "launchpadStart": 60,
+    "launchpadPeriod": 604800,
+    "launchpadMinimum": "20000000",
+    "cancelFeeBps": 0,
+    "feeRecipient": "${DEPLOYER_ADDRESS}",
+    "sc3Params": {
+      "minRedeem": "20000000",
+      "redeemCancelFeeBps": 0,
+      "redemptionFeeBps": 0,
+      "redeemFulfillTimeout": 950400,
+      "subFulfillTimeout": 259200,
+      "windDownWindow": 777600
+    }
+  },
+  "navReporter": {
+    "heartbeatSeconds": 1800
+  },
+  "pruvExecutor": {
+    "subFulfillTimeout": 3600,
+    "executorSlippageBps": 5000,
+    "redeemFulfillTimeout": 864000,
+    "redeemDelay": 600,
+    "minRedeemDelay": 60
+  },
+  "navOracleConsumer": {
+    "$comment": "Reused, as everywhere else: NAV is live on block 1 and neither Derryl nor a new reporter is needed.",
+    "reporterDomain": 7336,
+    "stalenessWindow": 3600,
+    "maxNavMoveBps": 500,
+    "seedNav": "1000000000000000000",
+    "reuseAddress": "0x9a42404134f1001d259fC979c2471D60BB989eB8"
+  },
+  "roles": {
+    "owner": "${DEPLOYER_ADDRESS}",
+    "guardian": "${DEPLOYER_ADDRESS}",
+    "reporter": "0x212f88Cb74109919B9224a7e6EF0A0a095B4C5cf"
+  },
+  "schedule": {
+    "epochDuration": 3600,
+    "windowLength": 600
+  }
+}

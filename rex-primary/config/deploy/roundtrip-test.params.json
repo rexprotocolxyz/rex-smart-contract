@@ -1,0 +1,81 @@
+{
+  "$comment": [
+    "Round-trip test fund, 1.3.0 (2026-09-12). A THROWAWAY instance whose only purpose is to run",
+    "one full subscribe round trip, one full redeem round trip, and the ADR-027 cancel-while-",
+    "accruing path against a real chain -- then be abandoned. It is NOT registered in REXRegistry",
+    "(deliberate: the registry keys by rwaToken, which all three 1.3.0 funds share, so registering",
+    "this one would make it the version the dApp resolves to). Its config/deployments.json entry",
+    "carries \"opsDefault\": false so `--env sepolia` keeps targeting the operational fund; operate",
+    "this one with `tx <verb> --rex-primary <its address>`.",
+    "",
+    "Everything is identical to testnet-dev EXCEPT schedule.epochDuration, which is 300 (5 min, vs",
+    "3600) so epoch 1 is triggerable 5 min after the launchpad closes and each later epoch 5 min",
+    "after the last -- the accrual path can then be walked repeatedly in one sitting. The EPOCH",
+    "clock is the one that needed shortening; the launchpad window did not.",
+    "",
+    "launchpadPeriod STAYS AT 3600. The first attempt set it to 300 and lost the fund: the window",
+    "is the only time deposits are accepted (`_requireLaunchpadOpen` bounds them at BOTH ends,",
+    "REXPrimary.sol:410), and five minutes does not survive post-deploy wiring plus an approve and",
+    "a deposit. A window that closes with less than launchpadMinimum raised leaves exactly one",
+    "reachable outcome, LaunchpadFail, which is terminal. Deploy 0xAEf07202 died that way.",
+    "",
+    "WHY THE MINIMUMS STAY AT 20. They are what makes ADR-027 observable at all. A batch only sits",
+    "in `Accumulating` -- the one state where the new cancel is legal -- when it is BELOW minSub,",
+    "so a fund with minSub 0 (every devnet, and every deploy before 2026-09-09) can never host the",
+    "scenario. Deposit less than 20 USDC, let an epoch consume it, and the batch accrues: that is",
+    "the state to cancel from. Lowering these to make the round trip easier would delete the",
+    "evidence this fund exists to produce.",
+    "",
+    "SC13 §4.2: pruvExecutor.redeemDelay (and minRedeemDelay) must stay below epochDuration - schedule.windowLength."
+  ],
+  "key": "roundtrip-test",
+  "contracts": {
+    "rwaToken": "0x5d5c787e29a807194f8bc82ee2cfbddce2407370",
+    "rwaConversion": "0x261113d0c29e83d37ee3081e933f18743665e546",
+    "fundWrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+    "homeWrwaRoute": "0x598fA0aE2f1cCB38642531ecf3C4ed35f7937dfb"
+  },
+  "rexPrimary": {
+    "minSub": "20000000",
+    "launchpadStart": 60,
+    "launchpadPeriod": 3600,
+    "launchpadMinimum": "20000000",
+    "cancelFeeBps": 0,
+    "feeRecipient": "${DEPLOYER_ADDRESS}",
+    "sc3Params": {
+      "minRedeem": "20000000",
+      "redeemCancelFeeBps": 0,
+      "redemptionFeeBps": 0,
+      "redeemFulfillTimeout": 7200,
+      "subFulfillTimeout": 259200,
+      "windDownWindow": 777600
+    }
+  },
+  "navReporter": {
+    "heartbeatSeconds": 1800
+  },
+  "pruvExecutor": {
+    "subFulfillTimeout": 3600,
+    "executorSlippageBps": 5000,
+    "redeemFulfillTimeout": 3600,
+    "redeemDelay": 120,
+    "minRedeemDelay": 60
+  },
+  "navOracleConsumer": {
+    "$comment": "Reused, as on every deploy since 1.1.0: NAV is live on block 1, no new reporter and no grant.",
+    "reporterDomain": 7336,
+    "stalenessWindow": 3600,
+    "maxNavMoveBps": 500,
+    "seedNav": "1000000000000000000",
+    "reuseAddress": "0x9a42404134f1001d259fC979c2471D60BB989eB8"
+  },
+  "roles": {
+    "owner": "${DEPLOYER_ADDRESS}",
+    "guardian": "${DEPLOYER_ADDRESS}",
+    "reporter": "0x212f88Cb74109919B9224a7e6EF0A0a095B4C5cf"
+  },
+  "schedule": {
+    "epochDuration": 300,
+    "windowLength": 60
+  }
+}

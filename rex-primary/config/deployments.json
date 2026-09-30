@@ -1,0 +1,1665 @@
+{
+  "$comment": [
+    "INIT-5 deployment registry. ADR-011 §3: no upgradeable proxy — a logic change is a NEW deployment,",
+    "so this file carries ONE ENTRY PER VERSION and old entries are never edited or deleted (v1 receipts",
+    "stay claimable and must stay readable after v2 goes live — ADR-011 'Consequences').",
+    "",
+    "RESOLUTION RULE: this file is a CATALOG, not a chronological log. Besides the deployments we",
+    "actually operate it also carries synthetic per-fund read-API fixtures (the TEST-* entries), which",
+    "the frontend and the read-API fold project from DB-faked events with no contract behind them.",
+    "Entries are therefore NOT ordered by recency, and array position must never be read as recency.",
+    "",
+    "Resolve an entry by `deployedAt` (newest wins), or pin one explicitly. Both consumers do this:",
+    "  services  RegistryService.activeDeployment() -- REX_VERSION if pinned, else newest deployedAt",
+    "  @rex/ops  readDeployment()                   -- newest deployedAt (same comparator, verbatim)",
+    "Keep the two in sync: ops resolved by array position until 2026-09-04, which silently pointed",
+    "`ops read` / `ops tx --env sepolia` at TEST-PORTFOLIO-1.0.0 (0xde00...0006, no code on chain)",
+    "instead of the live SC10-1.0.0.",
+    "",
+    "So: an entry that is NOT meant to be operated must carry a deliberately ancient `deployedAt` --",
+    "the convention the TEST-* fixtures established with 2026-01-01. That, plus REX_VERSION pinning,",
+    "is what keeps them inert.",
+    "",
+    "A throwaway QA/demo instance is better recorded OUTSIDE this file, under config/deploy/ (see",
+    "config/deploy/tester-instance.json, the 2026-09-01 QA instance -- release 1.0.1 bytecode, but",
+    "stalenessWindow = type(uint256).max, which @rex/ops cannot even represent as a JS number). Such an",
+    "instance is still valid evidence that a version works on testnet; it is just not a registry entry.",
+    "",
+    "SCOPE RULE: this schema records only what the contracts ACTUALLY implement today. It deliberately",
+    "does NOT carry fields for surfaces that exist as interface declarations only — adding them would",
+    "invite a consumer to depend on a call that reverts. Add a field in the same PR that implements it.",
+    "",
+    "Deployables today — four (see DeploymentEntry in services/src/config/deployments.types.ts):",
+    "  home.rexPrimary        contracts/src/REXPrimary.sol:19  `is ERC1155, BridgeAdapter, IREXSubscribe`",
+    "  home.navOracleConsumer contracts/src/NavOracleConsumer.sol:13 `is Ownable, ReentrancyGuard, IMessageRecipient`",
+    "  home.epochSchedule     contracts/src/EpochSchedule.sol `is IEpochSchedule` (SC11 / ADR-025):",
+    "                         immutable, stateless epoch calendar. Optional + nullable, absent on any",
+    "                         entry recorded before SC11.",
+    "  fund.pruvExecutor      contracts/src/PruvExecutor.sol:23 `is BridgeAdapter, IERC1155Receiver, IPruvExecutor`",
+    "`BridgeAdapter` is `abstract` (contracts/src/BridgeAdapter.sol:21) and inherited by both — it is NOT",
+    "deployed standalone and gets no address.",
+    "",
+    "constructorArgs mirror the real constructors verbatim, so a deploy is reproducible and verifiable:",
+    "  REXPrimary        usdc · mailbox · usdcRoute · wrwaRoute · pruvDomain · minSub",
+    "                     · launchpadStart · launchpadPeriod · launchpadMinimum · cancelFeeBps",
+    "                     · feeRecipient · sc3Params { minRedeem · redeemCancelFeeBps · maxSubWait",
+    "                       · maxRedeemPerEpoch · maxRedeemWait · redemptionFeeBps",
+    "                       · redeemFulfillTimeout · windDownWindow } — SC3Params minus `navOracle`",
+    "                       and (SC11+) `schedule`, whose resolved addresses are `home.navOracleConsumer`",
+    "                       / `home.epochSchedule` above, not repeated here. SC11 also dropped `keeper`",
+    "                       (ADR-025) — optional going forward, present only on pre-SC11 entries.",
+    "  PruvExecutor       mailbox · wrwaRoute · homeDomain · rwaToken · usdc · usdcRoute",
+    "                     · subFulfillTimeout · executorSlippageBps · redeemFulfillTimeout (SC8a added",
+    "                       the last 4; pre-SC8a entries recorded only the first 5).",
+    "  NavOracleConsumer  mailbox · reporterDomain · stalenessWindow · maxNavMoveBps (SC8a: recorded",
+    "                     here now that a write reads this contract's real deploy args back).",
+    "The launchpad block arrived with SC2 (2026-07-31). It is IMMUTABLE and there is no startLaunchpad()",
+    "call — the window is defined entirely by these values (ADR-007: launchpad is time-based, closing is",
+    "permissionless), so a wrong value is only fixable by redeploying (ADR-011). cancelFeeBps is bounded",
+    "by feeCapBps (init 200, admin-settable via setFeeCap under CONFIG_TIMELOCK, no hard ceiling — ADR-007 A1); the rate is snapshotted at request time.",
+    "",
+    "`version` is now READ FROM ON-CHAIN `VERSION()` (SC6) AND ASSERTED: ADR-011 §3 wanted",
+    "`string public constant VERSION`, and REXPrimary.sol now exposes exactly that. A write must read",
+    "it back and assert it matches before recording this entry — it is no longer purely",
+    "registry-assigned, as it was pre-SC6.",
+    "",
+    "navOracleConsumer was REMOVED on 2026-07-29 because no such contract existed, and is BACK as of",
+    "SC3 (2026-08-05) because it now does: NavOracleConsumer.sol is deployed on the home chain, emits",
+    "NavUpdated, and REXPrimary reads it via nav() instead of the old hardcoded 1e18. It is OPTIONAL and",
+    "NULLABLE in the schema — an entry written before SC3 has no such key, and the home crawler then",
+    "watches REXPrimary alone rather than filtering on a guessed address. Its own constructor args",
+    "(mailbox / reporterDomain / stalenessWindow / maxNavMoveBps) are now recorded at",
+    "constructorArgs.navOracleConsumer (added SC8a; optional, absent on pre-SC8a entries). That is",
+    "independent of NAV_STALENESS_SECONDS in .env, which is what /nav reports against today and MUST",
+    "still be kept equal to the deployed stalenessWindow() by hand — nothing yet cross-checks the two.",
+    "",
+    "fund.navReporter (contracts/src/NavReporter.sol) is the PRUV NAV feed, built by SC9 (Core-1) and",
+    "deployed + recorded at SC8d P4. It reads RWAConversion.value() and dispatches it to",
+    "home.navOracleConsumer (ADR-004 A1). OPTIONAL and NULLABLE — absent on any pre-SC9 entry (the live",
+    "SC6-1.0.0 entry has no such key yet); constructorArgs.navReporter mirrors its real constructor",
+    "(mailbox / homeDomain / consumer / source / heartbeat). BE5 (AT-70 §2) reads this address to operate the relay.",
+    "",
+    "NOT in this schema, and why (do not add speculatively):",
+    "  launchpad params (start/period/minimum/cancelFeeBps/feeRecipient) — the SC2 design describes them",
+    "      as immutable constructor args, but SC2 is unmerged (branch feat/SC2-launchpad carries design +",
+    "      plan docs only) and the live constructor takes none of them.",
+    "  fee config — no fee logic is built; the constructor takes no fee parameter.",
+    "  redeem addresses/params — IREXRedeem is a frozen DECLARATION only, inherited at SC5",
+    "      (shared/src/IREXPrimary.sol:26-28).",
+    "",
+    "Empty until a testnet deploy runs. Nothing is deployed yet — gate G2 is open, SC1 has never run on",
+    "testnet (docs/planning/story-list.md:248)."
+  ],
+  "deployments": [
+    {
+      "version": "SC6-1.0.0",
+      "network": "sepolia",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-08-20T04:40:34.001Z",
+      "home": {
+        "rexPrimary": "0x114001623C13BfdF4e7236c950ECDDb898b0821e",
+        "startBlock": "11526761",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105"
+      },
+      "fund": {
+        "pruvExecutor": "0x114001623C13BfdF4e7236c950ECDDb898b0821e",
+        "navReporter": "0x964cf7C9DD586B2096a1e8993d83B1EbB9938De5"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "usdcRoute": "0xd753B462532646354e8FE918AA1a8b2eD055bD6e",
+          "wrwaRoute": "0xD8d3947a5E73d7C6e305875ddF809dcB90eabf95",
+          "pruvDomain": 7336,
+          "keeper": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "minSub": "0",
+          "launchpadStart": "1787200800",
+          "launchpadPeriod": "86400",
+          "launchpadMinimum": "0",
+          "cancelFeeBps": 0,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "0",
+            "redeemCancelFeeBps": 0,
+            "maxSubWait": 2592000,
+            "maxRedeemPerEpoch": "0",
+            "maxRedeemWait": 2592000,
+            "redemptionFeeBps": 0,
+            "redeemFulfillTimeout": 864000,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x159E57CFEB59825C0a7b564FadC53088BcAF0aE2",
+          "homeDomain": 11155111,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x7190D4BB0FF3CF9BE7C3e458153226C4D304DfD1",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 100,
+          "redeemFulfillTimeout": 864000
+        },
+        "navOracleConsumer": {
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        },
+        "navReporter": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "homeDomain": 11155111,
+          "consumer": "0x000000000000000000000000caacb584ba961b8363bc7b59d3c44ce6d892d105",
+          "source": "0x261113d0c29e83d37ee3081e933f18743665e546",
+          "heartbeat": "1800"
+        }
+      }
+    },
+    {
+      "$note": [
+        "AT-190/AT-191 redeploy onto Derryl's new zero-fee warp routes (2026-08-24). Only the 4 warp",
+        "routes changed; usdc/rwaToken/mailboxes/rwaConversion unchanged, so REXPrimary + PruvExecutor",
+        "were redeployed (immutable route ctor args) but NavOracleConsumer (0xCaaC) + NavReporter",
+        "(0x964c) are REUSED (NAV path untouched). DEV-PHASE: on-chain VERSION() is still 'SC6-1.0.0'",
+        "(AT-190 did not bump it, Lead-waived ADR-011 versioning while in develop); 'version' below is an",
+        "INSTANCE label, not the on-chain VERSION. External PENDING: Derryl/Pruv must whitelist the new",
+        "executor 0xca9b on the PRUV mailbox SenderWhitelistHook + RWAToken identity registry before a",
+        "round-trip. keeper = deployer (BE5 re-points + setKeeper 0xaeF7 after)."
+      ],
+      "version": "SC10-1.0.0",
+      "network": "sepolia",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-08-24T13:09:43.000Z",
+      "home": {
+        "rexPrimary": "0x78953B05721b80936605b5D5F4A9bB6E8a491ef9",
+        "startBlock": "11557138",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105"
+      },
+      "fund": {
+        "pruvExecutor": "0xca9b4e04a5b1344c7e41beed95e83e0e8598078c",
+        "navReporter": "0x964cf7C9DD586B2096a1e8993d83B1EbB9938De5"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "usdcRoute": "0xB1fdEC0e7fbf13A4a0e7E9A77e98486B93De1914",
+          "wrwaRoute": "0x598fA0aE2f1cCB38642531ecf3C4ed35f7937dfb",
+          "pruvDomain": 7336,
+          "keeper": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "minSub": "0",
+          "launchpadStart": "1787575956",
+          "launchpadPeriod": "86400",
+          "launchpadMinimum": "0",
+          "cancelFeeBps": 0,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "0",
+            "redeemCancelFeeBps": 0,
+            "maxSubWait": 2592000,
+            "maxRedeemPerEpoch": "0",
+            "maxRedeemWait": 2592000,
+            "redemptionFeeBps": 0,
+            "redeemFulfillTimeout": 864000,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 11155111,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x725e38fcB4fd2f6711d888C0F369E6a6DbA1c16A",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 100,
+          "redeemFulfillTimeout": 864000
+        },
+        "navOracleConsumer": {
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        },
+        "navReporter": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "homeDomain": 11155111,
+          "consumer": "0x000000000000000000000000caacb584ba961b8363bc7b59d3c44ce6d892d105",
+          "source": "0x261113d0c29e83d37ee3081e933f18743665e546",
+          "heartbeat": "1800"
+        }
+      }
+    },
+    {
+      "version": "1.0.1",
+      "network": "sepolia",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-06T08:50:16.724Z",
+      "home": {
+        "rexPrimary": "0x125693477a58E38Ed1eFec6AaCDD0Fb27be138d2",
+        "startBlock": "11662322",
+        "navOracleConsumer": "0x9a42404134f1001d259fC979c2471D60BB989eB8"
+      },
+      "fund": {
+        "pruvExecutor": "0xbd24a55486265F7CeF961880d2bFf52c2e6AaA68",
+        "navReporter": "0x212f88Cb74109919B9224a7e6EF0A0a095B4C5cf"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "usdcRoute": "0xB1fdEC0e7fbf13A4a0e7E9A77e98486B93De1914",
+          "wrwaRoute": "0x598fA0aE2f1cCB38642531ecf3C4ed35f7937dfb",
+          "pruvDomain": 7336,
+          "keeper": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "minSub": "0",
+          "launchpadStart": "1788684540",
+          "launchpadPeriod": "86400",
+          "launchpadMinimum": "0",
+          "cancelFeeBps": 0,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "0",
+            "redeemCancelFeeBps": 0,
+            "maxSubWait": 2592000,
+            "maxRedeemWait": 2592000,
+            "redemptionFeeBps": 0,
+            "redeemFulfillTimeout": 864000,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 11155111,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x725e38fcB4fd2f6711d888C0F369E6a6DbA1c16A",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 100,
+          "redeemFulfillTimeout": 864000
+        },
+        "navOracleConsumer": {
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      }
+    },
+    {
+      "version": "1.3.1",
+      "network": "sepolia",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-12T15:02:51.564Z",
+      "home": {
+        "rexPrimary": "0xf40D894F08c533E9E833Ed9D6f36cB8Ed93779E1",
+        "startBlock": "11689628",
+        "navOracleConsumer": "0x9a42404134f1001d259fC979c2471D60BB989eB8",
+        "epochSchedule": "0x8177fFC0660177a33E1c4b100F80A7aCb44AF575"
+      },
+      "fund": {
+        "pruvExecutor": "0x2Ece79C6FE21Fe05c05DAd794FBD1739194DB8A4",
+        "navReporter": "0x212f88Cb74109919B9224a7e6EF0A0a095B4C5cf"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "usdcRoute": "0xB1fdEC0e7fbf13A4a0e7E9A77e98486B93De1914",
+          "wrwaRoute": "0x598fA0aE2f1cCB38642531ecf3C4ed35f7937dfb",
+          "pruvDomain": 7336,
+          "minSub": "20000000",
+          "launchpadStart": "1789225248",
+          "launchpadPeriod": "3600",
+          "launchpadMinimum": "20000000",
+          "cancelFeeBps": 0,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 0,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 0,
+            "redeemFulfillTimeout": 864000,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 11155111,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x725e38fcB4fd2f6711d888C0F369E6a6DbA1c16A",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000
+        },
+        "navOracleConsumer": {
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      }
+    },
+    {
+      "version": "1.3.1-launchpad-demo",
+      "network": "sepolia",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-12T15:03:45.708Z",
+      "home": {
+        "rexPrimary": "0xC4Bd03AE120eacE3A20eA9B3cc310c4D1EA6c06d",
+        "startBlock": "11689647",
+        "navOracleConsumer": "0x9a42404134f1001d259fC979c2471D60BB989eB8",
+        "epochSchedule": "0x71Af3d9f6BD8Af045870eda193184F1a9eD47667"
+      },
+      "fund": {
+        "pruvExecutor": "0x2580C7EafcCa3380cD4A7EEE50Ba11f9ab32f69C",
+        "navReporter": "0x212f88Cb74109919B9224a7e6EF0A0a095B4C5cf"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "usdcRoute": "0xB1fdEC0e7fbf13A4a0e7E9A77e98486B93De1914",
+          "wrwaRoute": "0x598fA0aE2f1cCB38642531ecf3C4ed35f7937dfb",
+          "pruvDomain": 7336,
+          "minSub": "20000000",
+          "launchpadStart": "1789225236",
+          "launchpadPeriod": "604800",
+          "launchpadMinimum": "20000000",
+          "cancelFeeBps": 0,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 0,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 0,
+            "redeemFulfillTimeout": 864000,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 11155111,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x725e38fcB4fd2f6711d888C0F369E6a6DbA1c16A",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000
+        },
+        "navOracleConsumer": {
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "opsDefault": false
+    },
+    {
+      "version": "1.3.1-roundtrip-test",
+      "network": "sepolia",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-12T15:04:30.552Z",
+      "home": {
+        "rexPrimary": "0xea21f2d9CE08e9f5F468Cb36C2AA946290342fC3",
+        "startBlock": "11689653",
+        "navOracleConsumer": "0x9a42404134f1001d259fC979c2471D60BB989eB8",
+        "epochSchedule": "0xA94C4DC0714A43D650E9681A65A29044A98ede23"
+      },
+      "fund": {
+        "pruvExecutor": "0x5C8ca4651E87A91572Cd5181a032FF08A4493BE8",
+        "navReporter": "0x212f88Cb74109919B9224a7e6EF0A0a095B4C5cf"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "usdcRoute": "0xB1fdEC0e7fbf13A4a0e7E9A77e98486B93De1914",
+          "wrwaRoute": "0x598fA0aE2f1cCB38642531ecf3C4ed35f7937dfb",
+          "pruvDomain": 7336,
+          "minSub": "20000000",
+          "launchpadStart": "1789225320",
+          "launchpadPeriod": "3600",
+          "launchpadMinimum": "20000000",
+          "cancelFeeBps": 0,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 0,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 0,
+            "redeemFulfillTimeout": 864000,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 11155111,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x725e38fcB4fd2f6711d888C0F369E6a6DbA1c16A",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000
+        },
+        "navOracleConsumer": {
+          "mailbox": "0x8233C1DfCBCe0F85A4F29dc6f4Db767FF6E4a3eA",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "opsDefault": false
+    },
+    {
+      "version": "1.4.0",
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T10:08:46.298Z",
+      "home": {
+        "rexPrimary": "0x7105E50000255d13C617Ae1f769E341D03162881",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x114001623C13BfdF4e7236c950ECDDb898b0821e",
+        "windowLength": 600
+      },
+      "fund": {
+        "pruvExecutor": "0x54c85dD5399D9375FD8129Bd19c688EA78F37B1E",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789726144",
+          "launchpadPeriod": "86400",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 950400,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000,
+          "redeemDelay": 600,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-launchpad-demo",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T10:10:57.058Z",
+      "home": {
+        "rexPrimary": "0xCa9b4E04a5B1344c7e41BeED95E83e0e8598078C",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x964cf7C9DD586B2096a1e8993d83B1EbB9938De5",
+        "windowLength": 600
+      },
+      "fund": {
+        "pruvExecutor": "0xC011C4122c12407E8B20B578153FA6A11C4f74f3",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789726000",
+          "launchpadPeriod": "604800",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 950400,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000,
+          "redeemDelay": 600,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-roundtrip-test",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T10:11:00.267Z",
+      "home": {
+        "rexPrimary": "0x5fDb1D56816EAB09d99919Ef2F07186831B4A435",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0xD53bAD562d6806b4941b4fb1Ab879456dF00a1C3",
+        "windowLength": 60
+      },
+      "fund": {
+        "pruvExecutor": "0xC96245352b6d4e39e1ACCDf6b769f595352B6F44",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789726007",
+          "launchpadPeriod": "86400",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 7200,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 3600,
+          "redeemDelay": 120,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-lifecycle-test",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T10:39:18.415Z",
+      "home": {
+        "rexPrimary": "0x212f88Cb74109919B9224a7e6EF0A0a095B4C5cf",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0xbd24a55486265F7CeF961880d2bFf52c2e6AaA68",
+        "windowLength": 60
+      },
+      "fund": {
+        "pruvExecutor": "0x5a96B01556c394505f34d39b73B25654B42F335b",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789727957",
+          "launchpadPeriod": "86400",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 7200,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 3600,
+          "redeemDelay": 120,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-stuck-test",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T10:39:32.672Z",
+      "home": {
+        "rexPrimary": "0x78953B05721b80936605b5D5F4A9bB6E8a491ef9",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x55c7543bd53E1Eac8292451F14141dfec4207689",
+        "windowLength": 60
+      },
+      "fund": {
+        "pruvExecutor": "0xE88e7d630E80aDe206fDf0883F07C2C9e134C955",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789727964",
+          "launchpadPeriod": "86400",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 7200,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 3600,
+          "redeemDelay": 120,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-spare-test",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T10:39:51.768Z",
+      "home": {
+        "rexPrimary": "0x4D8A47682708fab2d3e73Db70B8b1421144aE670",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0xeF611154dE3236f01744DDCa11bc740543e19B59",
+        "windowLength": 60
+      },
+      "fund": {
+        "pruvExecutor": "0x8812a0382507b717C4664Dd3FE832c16a1371bDB",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789727971",
+          "launchpadPeriod": "86400",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 7200,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 3600,
+          "redeemDelay": 120,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-fast-a",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T11:20:00.261Z",
+      "home": {
+        "rexPrimary": "0x49d97ef38325E2238FaA1beC7DD0a3C690fe23b7",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x58544A9046212B1B888dF21EDd417Da077142C33",
+        "windowLength": 60
+      },
+      "fund": {
+        "pruvExecutor": "0x0ff5164D4648917f51db58131522402b1aBCC8ae",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789730411",
+          "launchpadPeriod": "1800",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 7200,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 3600,
+          "redeemDelay": 120,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-fast-b",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T11:20:14.646Z",
+      "home": {
+        "rexPrimary": "0x6d45b41da90213aA9308F7593444E75aa64D6386",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0xeCA00bC1e30228809b02dF50eD6Fd02000B44268",
+        "windowLength": 60
+      },
+      "fund": {
+        "pruvExecutor": "0xF43cdBBB0c2920c331799E5C2500E775FB7AB19D",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789730419",
+          "launchpadPeriod": "1800",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 7200,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 3600,
+          "redeemDelay": 120,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-lifecycle-fast",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T11:27:09.640Z",
+      "home": {
+        "rexPrimary": "0x54c85dD5399D9375FD8129Bd19c688EA78F37B1E",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x4bCdA410c35888f759786e03F9a93dBBCcCaA916",
+        "windowLength": 60
+      },
+      "fund": {
+        "pruvExecutor": "0x3Fd37700e5117195a6ba3048Be47c34950EAa963",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789730845",
+          "launchpadPeriod": "1800",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 7200,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 3600,
+          "redeemDelay": 120,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-spare-fast",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T11:27:33.807Z",
+      "home": {
+        "rexPrimary": "0xC011C4122c12407E8B20B578153FA6A11C4f74f3",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB",
+        "windowLength": 60
+      },
+      "fund": {
+        "pruvExecutor": "0x77652Dec97e0c19D7d16f1A1318b8B33CC40D31B",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789730853",
+          "launchpadPeriod": "1800",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 7200,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 3600,
+          "redeemDelay": 120,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-shutdown-test",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T15:30:42.512Z",
+      "home": {
+        "rexPrimary": "0xE335DE826c092EdA8D42E96386ED28f8824dE9ed",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x9874469f11928913ed62f61aDB5acB761025ccde",
+        "windowLength": 60
+      },
+      "fund": {
+        "pruvExecutor": "0x0000000000000000000000000000000000000001",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "0",
+          "launchpadStart": "1789730845",
+          "launchpadPeriod": "60",
+          "launchpadMinimum": "0",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 7200,
+            "windDownWindow": 300
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 3600,
+          "redeemDelay": 120,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-abort-test",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-18T15:59:08.760Z",
+      "home": {
+        "rexPrimary": "0x9bAa9c377e8d1593A53AB99Ca463810432941709",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0xF2e7cC05c4700582A8d01F909fd4344732dC0203",
+        "windowLength": 60
+      },
+      "fund": {
+        "pruvExecutor": "0x77652Dec97e0c19D7d16f1A1318b8B33CC40D31B",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789747185",
+          "launchpadPeriod": "600",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 7200,
+            "windDownWindow": 300
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 3600,
+          "redeemDelay": 120,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      },
+      "retired": true
+    },
+    {
+      "version": "1.4.0-b",
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-21T08:14:12.813Z",
+      "home": {
+        "rexPrimary": "0x11A6921d5B39AAB3905e1c69B88F11A068b1a15c",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0xbc97c3cf052907240786FCe09e88D3D7d93A4Ca2",
+        "windowLength": 600
+      },
+      "fund": {
+        "pruvExecutor": "0x54c85dD5399D9375FD8129Bd19c688EA78F37B1E",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789978708",
+          "launchpadPeriod": "3600",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 950400,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000,
+          "rwaConversion": "0x261113D0c29E83D37Ee3081E933F18743665E546",
+          "redeemDelay": 600,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      }
+    },
+    {
+      "version": "1.4.0-launchpad-demo-b",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-21T08:15:09.674Z",
+      "home": {
+        "rexPrimary": "0x7395c215B55386D42fdBE411270eF5395f13F839",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0xE2aA841ae141C0196A14C8aB1b35fEb8DC019eC0",
+        "windowLength": 600
+      },
+      "fund": {
+        "pruvExecutor": "0xC011C4122c12407E8B20B578153FA6A11C4f74f3",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x9FCD443dcd49e690B302F47554a16476E34de8C0",
+          "pruvDomain": 7336,
+          "minSub": "20000000000000000000",
+          "launchpadStart": "1789978541",
+          "launchpadPeriod": "604800",
+          "launchpadMinimum": "20000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 950400,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "homeDomain": 97,
+          "rwaToken": "0x5d5C787E29a807194F8bC82eE2CFBddce2407370",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000,
+          "rwaConversion": "0x261113D0c29E83D37Ee3081E933F18743665E546",
+          "redeemDelay": 600,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      }
+    },
+    {
+      "version": "1.4.0-trex02-fail",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-28T04:32:33.177Z",
+      "home": {
+        "rexPrimary": "0x1cE7D9B78F7b6f35450cE5379138265f8F508033",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x01286e8105719cd2a0c76C30123F176ABbA71a5A",
+        "windowLength": 600,
+        "startBlock": "133606532"
+      },
+      "fund": {
+        "pruvExecutor": "0xfc85Aaf34d8a9BF134786C1Fef0B8d8B5184E654",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB",
+        "startBlock": "19411274"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "pruvDomain": 7336,
+          "minSub": "40000000000000000000",
+          "launchpadStart": "1790569991",
+          "launchpadPeriod": "7200",
+          "launchpadMinimum": "40000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 950400,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x976B1be260b2D7481124bB41aE27e4F1025A7570",
+          "homeDomain": 97,
+          "rwaToken": "0x6bEcea396eE56dbe842c7b1806Da905a5E78c9a8",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000,
+          "rwaConversion": "0x86CF826955A296281C9bb0839d83a5fd061592af",
+          "redeemDelay": 600,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      }
+    },
+    {
+      "version": "1.4.0-trex02-win",
+      "opsDefault": false,
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-28T04:32:54.139Z",
+      "home": {
+        "rexPrimary": "0xe770531DE72Bb5cACFA8c770e0370C612feC7e2C",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0xc6C49D72272Bb74b3e4c15D8b83C4AE8aFaBd21C",
+        "windowLength": 600,
+        "startBlock": "133606584"
+      },
+      "fund": {
+        "pruvExecutor": "0xDc153f20009Ff42AcFa879314a331C8Fb546317f",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB",
+        "startBlock": "19411283"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "pruvDomain": 7336,
+          "minSub": "40000000000000000000",
+          "launchpadStart": "1790570013",
+          "launchpadPeriod": "7200",
+          "launchpadMinimum": "40000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 950400,
+            "windDownWindow": 777600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x976B1be260b2D7481124bB41aE27e4F1025A7570",
+          "homeDomain": 97,
+          "rwaToken": "0x6bEcea396eE56dbe842c7b1806Da905a5E78c9a8",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000,
+          "rwaConversion": "0x86CF826955A296281C9bb0839d83a5fd061592af",
+          "redeemDelay": 600,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      }
+    },
+    {
+      "version": "1.4.0-trex02-fail-2",
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-29T05:30:04.828Z",
+      "home": {
+        "rexPrimary": "0xd5F6E4dbBa09eA60344831B8EA9C1C9F178189B9",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0xEDD4968124b8798f61b25bb3B61a28cfF2Fe403e",
+        "windowLength": 600
+      },
+      "fund": {
+        "pruvExecutor": "0xE335DE826c092EdA8D42E96386ED28f8824dE9ed",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "pruvDomain": 7336,
+          "minSub": "40000000000000000000",
+          "launchpadStart": "1790659834",
+          "launchpadPeriod": "5400",
+          "launchpadMinimum": "40000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 950400,
+            "windDownWindow": 600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x976B1be260b2D7481124bB41aE27e4F1025A7570",
+          "homeDomain": 97,
+          "rwaToken": "0x6bEcea396eE56dbe842c7b1806Da905a5E78c9a8",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000,
+          "rwaConversion": "0x86CF826955A296281C9bb0839d83a5fd061592af",
+          "redeemDelay": 600,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      }
+    },
+    {
+      "version": "1.4.0-trex02-win-2",
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-29T05:30:29.891Z",
+      "home": {
+        "rexPrimary": "0x8063079A45fB36AcC62ef9C87DA6Cfdb6E9f03A7",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x72229E9952e34A6C05ae1B9F76878dF56a072663",
+        "windowLength": 600
+      },
+      "fund": {
+        "pruvExecutor": "0xCE757e0DC43373dB1603b0B5f32C248D4679B38C",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "pruvDomain": 7336,
+          "minSub": "40000000000000000000",
+          "launchpadStart": "1790659852",
+          "launchpadPeriod": "5400",
+          "launchpadMinimum": "40000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 950400,
+            "windDownWindow": 600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x976B1be260b2D7481124bB41aE27e4F1025A7570",
+          "homeDomain": 97,
+          "rwaToken": "0x6bEcea396eE56dbe842c7b1806Da905a5E78c9a8",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000,
+          "rwaConversion": "0x86CF826955A296281C9bb0839d83a5fd061592af",
+          "redeemDelay": 600,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      }
+    },
+    {
+      "version": "1.4.0-trex02-win-5",
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-29T15:29:31.748Z",
+      "home": {
+        "rexPrimary": "0x25942c27Dd069943431fDB04780466ff9E4d03dC",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x652ECE9EF91c2005A06D46039264E3e22F4C2Cd0",
+        "windowLength": 600,
+        "startBlock": "133886088"
+      },
+      "fund": {
+        "pruvExecutor": "0xfc85Aaf34d8a9BF134786C1Fef0B8d8B5184E654",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB",
+        "startBlock": "19411274"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "pruvDomain": 7336,
+          "minSub": "40000000000000000000",
+          "launchpadStart": "1790695799",
+          "launchpadPeriod": "46666",
+          "launchpadMinimum": "40000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 950400,
+            "windDownWindow": 600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x976B1be260b2D7481124bB41aE27e4F1025A7570",
+          "homeDomain": 97,
+          "rwaToken": "0x6bEcea396eE56dbe842c7b1806Da905a5E78c9a8",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000,
+          "rwaConversion": "0x86CF826955A296281C9bb0839d83a5fd061592af",
+          "redeemDelay": 600,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      }
+    },
+    {
+      "version": "1.4.0-trex02-fail-5",
+      "network": "bsc-testnet",
+      "fundNetwork": "pruv-testnet",
+      "deployedAt": "2026-09-29T15:29:55.390Z",
+      "opsDefault": false,
+      "home": {
+        "rexPrimary": "0xC4a0Ab7117c37E148a41f56431DBD54b707164cC",
+        "navOracleConsumer": "0xCaaCB584ba961b8363BC7B59D3C44cE6d892D105",
+        "epochSchedule": "0x56d3213C319F208673944BbFd2f89f3Ab2c300de",
+        "windowLength": 600,
+        "startBlock": "133886160"
+      },
+      "fund": {
+        "pruvExecutor": "0xE335DE826c092EdA8D42E96386ED28f8824dE9ed",
+        "navReporter": "0x7A57F6715796B2DE9508B1389D26848278fD5bcB",
+        "startBlock": "19456159"
+      },
+      "constructorArgs": {
+        "rexPrimary": {
+          "usdc": "0x867FBBBDc204f2903804a6857b015b0b92b4af84",
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "usdcRoute": "0x1517A89213eCf5C02cFcf54A5065EFe04d1210Ff",
+          "wrwaRoute": "0x660F4183C4bFBaA52569467E465FF320dB05e44E",
+          "pruvDomain": 7336,
+          "minSub": "40000000000000000000",
+          "launchpadStart": "1790695836",
+          "launchpadPeriod": "46692",
+          "launchpadMinimum": "40000000000000000000",
+          "cancelFeeBps": 50,
+          "feeRecipient": "0x43a3D25C918b84fB2DFbc5dEA5d165c7517d65FF",
+          "sc3Params": {
+            "minRedeem": "20000000",
+            "redeemCancelFeeBps": 50,
+            "subFulfillTimeout": 259200,
+            "redemptionFeeBps": 25,
+            "redeemFulfillTimeout": 950400,
+            "windDownWindow": 600
+          }
+        },
+        "pruvExecutor": {
+          "mailbox": "0x72364A5F747a4e6E17b13Be4b421b879E95D95E7",
+          "wrwaRoute": "0x976B1be260b2D7481124bB41aE27e4F1025A7570",
+          "homeDomain": 97,
+          "rwaToken": "0x6bEcea396eE56dbe842c7b1806Da905a5E78c9a8",
+          "usdc": "0x756EfF2C697835bE39ea6D4B897305A207374cBE",
+          "usdcRoute": "0x72404d68ABc045349E5553C78D65914aee17D51E",
+          "subFulfillTimeout": 3600,
+          "executorSlippageBps": 5000,
+          "redeemFulfillTimeout": 864000,
+          "rwaConversion": "0x86CF826955A296281C9bb0839d83a5fd061592af",
+          "redeemDelay": 600,
+          "minRedeemDelay": 60
+        },
+        "navOracleConsumer": {
+          "mailbox": "0xecbEB24A9ed4C0A11D4F45ADd8D39F026291b7A4",
+          "reporterDomain": 7336,
+          "stalenessWindow": 3600,
+          "maxNavMoveBps": 500
+        }
+      }
+    }
+  ]
+}
