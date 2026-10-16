@@ -30,7 +30,7 @@ pnpm installs pinned Solidity dependencies. Foundry handles compilation, tests, 
 
 ## Setup
 
-From `order-book/smart-contracts`:
+From `order-book/`:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -106,7 +106,7 @@ Generated `out`, `cache`, `broadcast`, `simulations`, coverage, and dependency d
 ## Deployment
 
 The production workflow is deliberately linear: prepare the reviewed inputs, simulate, review the simulated
-transactions, broadcast, and verify source code. Run every command below from `order-book/smart-contracts`.
+transactions, broadcast, and verify source code. Run every command below from `order-book/`.
 
 1. Create a dedicated encrypted Foundry keystore for the funded deployment account. Enter the private key and choose a
    strong keystore password only at Cast's hidden interactive prompts; the deployer receives no protocol role.
