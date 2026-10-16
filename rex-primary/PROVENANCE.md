@@ -64,9 +64,11 @@ From `contracts/`:
 
 ```
 forge build --sizes    ->  REXPrimary 24,395 bytes (181 free of the 24,576 EIP-170 limit)
-forge test             ->  83 suites / 548 tests / 0 failed
+forge test             ->  83 suites / 556 tests / 0 failed
 ```
 
 Both figures were reproduced in both repositories with the same commands: sizes byte-identical
-across all five deployable contracts, suite totals matching exactly. If either differs on your
-machine, trust the source repository and report it — that means the export is wrong, not the code.
+across all five deployable contracts, suite totals matching exactly. The test total counts the test
+functions this tree declares, so it does not move with the Foundry release — a different number
+means a different tree. If either figure differs on your machine, trust the source repository and
+report it: that means the export is wrong, not the code.

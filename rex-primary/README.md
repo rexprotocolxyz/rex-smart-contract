@@ -33,7 +33,7 @@ Expected:
 
 ```
 REXPrimary   24,395 bytes   (EIP-170 limit 24,576 — 181 free)
-forge test   83 suites / 548 tests / 0 failed   (~6 min, includes fuzz + invariant)
+forge test   83 suites / 556 tests / 0 failed   (~6 min, includes fuzz + invariant)
 ```
 
 ## Layout

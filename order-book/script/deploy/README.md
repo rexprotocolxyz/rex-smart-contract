@@ -14,7 +14,7 @@ The deployment creates:
 
 ## 1. Prepare the environment
 
-From `order-book/smart-contracts`, copy the environment template:
+From `order-book/`, copy the environment template:
 
 ```sh
 cp .env.example .env

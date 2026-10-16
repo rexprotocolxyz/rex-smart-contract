@@ -19,8 +19,12 @@ differ on purpose — unifying them would leave one no longer matching what is o
 
 ```bash
 cd rex-primary/contracts && forge build --sizes && forge test
-cd order-book && pnpm install --frozen-lockfile && forge build --sizes && forge test
+cd order-book && pnpm install --frozen-lockfile && pnpm build:sizes && pnpm test
 ```
+
+`order-book/` reports sizes through `pnpm build:sizes`, not `forge build --sizes`. The latter also
+measures the deployment script and the test harness — neither is deployed, both are far over
+EIP-170, and it exits non-zero on them. The gate script measures the four deployable contracts.
 
 ## Start here
 
@@ -28,3 +32,8 @@ cd order-book && pnpm install --frozen-lockfile && forge build --sizes && forge 
   reasonable fixes unimplementable** (EIP-170 headroom, no proxies, frozen wire format).
 - `rex-primary/PROVENANCE.md` — where this tree came from and how to verify the export.
 - `order-book/README.md` — scope, toolchain, prerequisites.
+
+## License
+
+MIT — see `LICENSE`. Every Solidity file in both trees carries the matching
+`SPDX-License-Identifier: MIT` header.
